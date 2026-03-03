@@ -3,4 +3,4 @@ display_name: 群聊消息计数器 # 用于展示的名字，可以是方便人
 desc: 一个简单的群聊消息计数器，用来统计群友今天在群里说了多少逼话 # 插件简短描述
 version: v0.0.1 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: Bricks0411 # 作者
-repo: https://github.com/Soulter/helloworld # 插件的仓库地址
+repo: https://github.com/bricks0411/astrbot_plugin_group_message_counter # 插件的仓库地址
