@@ -17,7 +17,7 @@ from astrbot.api import logger
 @register("GroupMessageCounter", 
           "Bricks0411", 
           "一个简单的逼话计数器，用来统计群友今天在群里说了多少话", 
-          "0.0.1"
+          "0.1.0"
 )
 class GroupMessageCounter(Star):
 
