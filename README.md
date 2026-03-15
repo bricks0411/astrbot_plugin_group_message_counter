@@ -10,11 +10,13 @@
   <img src="https://count.getloli.com/@MessageCounter?name=MessageCounter&theme=asoul&padding=10&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="Moe Counter">
 </p>
 
-到底谁才是群里的 **大水王** 呢？
+到底谁才是群里的 **大水笔** 呢？
 
 ## 项目简介
 
 > 哎我操，怎么 $10$ 分钟不看群，群里又 $99+$ 了，你们的嘴巴比加特林还快啊真的是
+
+<img src="C:\Users\联想\AppData\Roaming\Typora\typora-user-images\image-20260303001032682.png" alt="image-20260303001032682" style="zoom: 80%;" />
 
 如果你想知道，这个群里面到底谁才是那个大水笔，那这个插件就很适合你的需求。
 
@@ -25,7 +27,7 @@
 - 视奸那个说 “不行真的得睡了” 的群友，又偷偷说了几句话
 - 把前 $10$ 个最能水群的水笔挂到群里
 
-数据通过 **SQLite** 实现可持久化数据存储，支持异步写入。
+数据通过 **SQLite** 实现可持久化数据存储，**支持异步写入**，**保证并发安全**，让每一句话都能被准确记录！
 
 目前仅在 **QQ 个人号** 上进行过测试，不保证其余平台的兼容性与稳定性。
 
@@ -88,6 +90,8 @@ astrbot_plugin_group_message_counter/
 |	└── cmd_config.json
 ├── font/
 │   └── LXGWWenKai-Regular.ttf
+├── utils/
+│  	└── render.py
 ├── main.py
 ├── metadata.yaml
 └── README.md
@@ -128,7 +132,7 @@ AstrBot/data/plugin_data/GroupMessageCounter/message_counter.db
 - `group_message_stats`：用户每日发言记录
 - `group_message_count`：群每日消息总数
 
-已建立索引以优化查询。
+已建立索引以优化查询，正如我之前所说的，监听群友的消息，不仅要准，还要快！
 
 ## 技术实现
 
@@ -158,6 +162,7 @@ AstrBot/data/plugin_data/GroupMessageCounter/message_counter.db
 
 - $7$ 日群聊活跃度展示
 - 排行榜自动化推送
+- Astrbot WebUI 配置项
 
 ## 贡献
 
