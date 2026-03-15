@@ -17,7 +17,7 @@ from astrbot.api import logger
 @register("GroupMessageCounter", 
           "Bricks0411", 
           "一个简单的逼话计数器，用来统计群友今天在群里说了多少话", 
-          "0.1.0"
+          "0.2.0"
 )
 class GroupMessageCounter(Star):
 
@@ -29,7 +29,7 @@ class GroupMessageCounter(Star):
         super().__init__(context)
         # 获取并初始化插件持久化数据的存储路径
         base_path = StarTools.get_data_dir()
-        self.plugin_data_path = base_path / "plugin_data" / self.__class__.__name__
+        self.plugin_data_path = base_path
         self.database_path = self.plugin_data_path / "message_counter.db"
         # 创建目录
         self.plugin_data_path.mkdir(parents = True, exist_ok = True)
@@ -37,7 +37,7 @@ class GroupMessageCounter(Star):
         self.font_path = str(BASE_DIR / "font" / "LXGWWenKai-Regular.ttf")
         # 判断字体文件是否存在
         if not Path(self.font_path).exists():
-            raise FileExistsError(
+            raise FileNotFoundError(
                 f"字体文件不存在：{self.font_path}"
             )
         # 实例化绘图类
@@ -85,20 +85,14 @@ class GroupMessageCounter(Star):
         # 创建索引，提升查询效率，遵循最左匹配原则
         cursor.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_group_date_count_stats
-            ON group_message_stats (group_id, date)
+            CREATE INDEX IF NOT EXISTS idx_group_date_count_count_rank
+            ON group_message_stats (group_id, date, message_count DESC, user_id ASC);
             """
         )
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_group_date_count_count
             ON group_message_count (group_id, date)
-            """
-        )
-        cursor.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_group_date_count_count_rank
-            ON group_message_stats (group_id, date, message_count DESC, user_id ASC);
             """
         )
         
@@ -281,7 +275,10 @@ class GroupMessageCounter(Star):
 
     async def initialize(self):
         """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""  
-        self.db = await aiosqlite.connect(self.database_path)
+        self.db = await aiosqlite.connect(
+            self.database_path,
+            check_same_thread = False
+        )
         self.db.row_factory = aiosqlite.Row
         # 定义写日志策略：预写日志，避免数据库写操作阻塞读操作
         await self.db.execute("PRAGMA journal_mode = WAL;")
