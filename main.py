@@ -1,15 +1,16 @@
 # main.py
 
-import os
+import time
 import sqlite3
 import aiosqlite
 import asyncio
+import random
 from pathlib import Path
 from datetime import datetime
 
 from .utils.render import ImageRenderer
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger
 
@@ -17,7 +18,7 @@ from astrbot.api import logger
 @register("GroupMessageCounter", 
           "Bricks0411", 
           "一个简单的逼话计数器，用来统计群友今天在群里说了多少话", 
-          "0.2.0"
+          "0.3.0"
 )
 class GroupMessageCounter(Star):
 
@@ -44,6 +45,17 @@ class GroupMessageCounter(Star):
         self.image_renderer = ImageRenderer(self.plugin_data_path, self.font_path)
         # 初始化数据库
         self.init_db()
+
+        self.db = None
+        self.db_lock = asyncio.Lock()
+        self._initialized = False
+
+        # 提交计数器
+        self.commit_count = 0
+
+        # 群信息缓存
+        self.group_name_cache = {}
+        self.cache_TTL = 300
 
 
     # 获取当前日期
@@ -103,6 +115,9 @@ class GroupMessageCounter(Star):
         
     # 更新用户群消息数
     async def update_user_counter(self, group_id: str, user_id: str, user_name: str):
+        # 短路保护，防止事件在数据库初始化前被触发
+        if not self._initialized or self.db is None:
+            return 0
         date = self.today()
         db = self.db
 
@@ -129,11 +144,19 @@ class GroupMessageCounter(Star):
                 """, 
                 (date, group_id)
             )
-
-            await db.commit()
+            self.commit_count += 1
+            # 延迟提交，每 30 条消息提交一次，提高性能
+            if self.commit_count >= 30:
+                await db.commit()
+                self.commit_count = 0
+            elif random.random() < 0.01:
+                await db.commit()
 
     # 获取指定群消息，并返回对应位置的结果
     async def get_group_message_total_count(self, group_id: str):
+        # 短路保护，防止事件在数据库初始化前被触发
+        if not self._initialized or self.db is None:
+            return 0
         date = self.today()
         db = self.db
         # 查询指定群消息数量
@@ -153,6 +176,9 @@ class GroupMessageCounter(Star):
 
     # 获取指定群中今天发言的用户数量
     async def get_group_user_total_count(self, group_id: str):
+        # 短路保护，防止事件在数据库初始化前被触发
+        if not self._initialized or self.db is None:
+            return 0
         date = self.today()
         db = self.db
 
@@ -173,6 +199,9 @@ class GroupMessageCounter(Star):
 
     # 获取指定群中消息数量排行榜（若发言用户多于 10 位，则返回前 10 位）
     async def get_group_user_message_rank(self, group_id: str):
+        # 短路保护，防止事件在数据库初始化前被触发
+        if not self._initialized or self.db is None:
+            return []
         date = self.today()
         db = self.db
         # 查询当天用户 - 群消息数信息，并降序排序
@@ -190,34 +219,22 @@ class GroupMessageCounter(Star):
 
         return [dict(row) for row in rows]
 
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def hello_world(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
-
     # 查询群消息总数，自动统计当天的群消息总数
     @filter.command("查询群消息")
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def get_group_message_count(self, event: AstrMessageEvent):
         """查询本群消息总数"""
+        # 短路保护，防止事件在数据库初始化前被触发
+        if not self._initialized or self.db is None:
+            return
+
         group_id = str(event.get_group_id())
         # 从数据库中查询对应群聊消息总数
         result_message_count = await self.get_group_message_total_count(group_id)
         result_person_count = await self.get_group_user_total_count(group_id)
         date = self.today()
-
-        # CQHTTP API，实现群名称查询，后期计划同步到数据库中，减少重复查询开销
-        group_info = await event.bot.get_group_info(
-            group_id = int(group_id),
-            no_cache = False
-        )
-        group_name = group_info["group_name"]
-
+        # 使用缓存机制，避免重复请求 API
+        group_name = await self.get_group_name(event, group_id)
         # 将绘图任务置于单独线程中，防止阻塞其他任务导致 bot 响应变慢
         image_path = await asyncio.to_thread(
             self.image_renderer.render_group_message_image, 
@@ -238,6 +255,9 @@ class GroupMessageCounter(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def get_group_message_rank(self, event: AstrMessageEvent):
         """查询本群消息排行"""
+        # 短路保护，防止事件在数据库初始化前被触发
+        if not self._initialized or self.db is None:
+            return
         date = self.today()
         group_id = str(event.get_group_id())
         rank_list = await self.get_group_user_message_rank(group_id)
@@ -265,6 +285,9 @@ class GroupMessageCounter(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message_counter(self, event: AstrMessageEvent):
         """实时监听对应群聊消息，更新对应群消息的数据"""
+        # 短路保护，防止事件在数据库初始化前被触发
+        if not self._initialized or self.db is None:
+            return
         # 获取消息的基本信息
         user_id = str(event.get_sender_id())
         user_name = event.get_sender_name()
@@ -272,6 +295,38 @@ class GroupMessageCounter(Star):
 
         await self.update_user_counter(group_id, user_id, user_name)
         logger.debug(f"接收到来自用户 {user_name}（编号：{user_id}）的消息！")
+
+    async def get_group_name(self, event: AstrMessageEvent, group_id: str) -> str:
+        CACHE_TTL = 300  # 5 分钟
+        now = time.time()
+        cache = self.group_name_cache.get(group_id)
+
+        # 命中缓存
+        if cache and now - cache["ts"] < CACHE_TTL:
+            return cache["name"]
+
+        # 未命中 or 过期
+        try:
+            # CQHTTP API，实现群名称查询，后期计划同步到数据库中，减少重复查询开销
+            group_info = await event.bot.get_group_info(
+                group_id=int(group_id),
+                no_cache=False
+            )
+            group_name = group_info["group_name"]
+            # 统一写入结构
+            self.group_name_cache[group_id] = {
+                "name": group_name,
+                "ts": now
+            }
+            return group_name
+
+        except Exception:
+            logger.exception("获取群名失败")
+            # fallback
+            if cache:
+                return cache["name"]
+
+            return "未知群"
 
     async def initialize(self):
         """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""  
@@ -287,7 +342,11 @@ class GroupMessageCounter(Star):
         # 定义临时表存放策略：放入内存，查询速度更快
         await self.db.execute("PRAGMA temp_store = MEMORY;")
         self.db_lock = asyncio.Lock()
+        self._initialized = True
     
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
-        await self.db.close()
+        # 数据库存在时执行
+        if self.db:
+            await self.db.commit()
+            await self.db.close()
