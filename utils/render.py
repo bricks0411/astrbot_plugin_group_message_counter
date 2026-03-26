@@ -101,16 +101,19 @@ class ImageRenderer:
         if not text:
             return ""
 
-        while text:
-            box = draw.textbbox((0, 0), text, font=font)
+        left, right = 0, len(text)
+
+        while left < right:
+            mid = (left + right + 1) // 2
+            box = draw.textbbox((0, 0), text[:mid], font=font)
             width = box[2] - box[0]
 
             if width <= max_width:
-                return text
+                left = mid
+            else:
+                right = mid - 1
 
-            text = text[:-1]
-
-        return ""
+        return text[:left]
 
     # 排名图片渲染
     def _draw_rank_card(
@@ -232,10 +235,17 @@ class ImageRenderer:
 
         y = header_height + 50
 
+        fit_font = self._fit_font_size(
+            draw,
+            group_name,
+            width - 2 * padding - 40,  # 留一点安全边距
+            base_size=42
+        )
+
         self._draw_card(
             draw, width, y, padding, card_height,
             group_name, "群名称",
-            font_big, font_label
+            fit_font, font_label
         )
 
         y += card_height + spacing
@@ -326,3 +336,16 @@ class ImageRenderer:
         image.save(image_path)
 
         return str(image_path)
+
+
+    def _fit_font_size(self, draw, text, max_width, base_size, min_size=16):
+        """根据最大宽度自动缩小字号"""
+        for size in range(base_size, min_size - 1, -2):  # 每次减 2 提高性能
+            font = self.load_font(size)
+            box = draw.textbbox((0, 0), text, font=font)
+            width = box[2] - box[0]
+
+            if width <= max_width:
+                return font
+
+        return self.load_font(min_size)
