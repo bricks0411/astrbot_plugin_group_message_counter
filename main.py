@@ -43,8 +43,6 @@ class GroupMessageCounter(Star):
             )
         # 实例化绘图类
         self.image_renderer = ImageRenderer(self.plugin_data_path, self.font_path)
-        # 初始化数据库
-        self.init_db()
 
         self.db = None
         self.db_lock = asyncio.Lock()
@@ -57,19 +55,42 @@ class GroupMessageCounter(Star):
         self.group_name_cache = {}
         self.cache_TTL = 300
 
+        # 生命周期
+        self.image_retention_days = 3
+        self.last_commit_time = time.time()
+
+    # 图片清理
+    def cleanup_old_images(self):
+        now = time.time()
+        max_age = self.image_retention_days * 86400
+
+        for file in self.plugin_data_path.glob("*.png"):
+            try:
+                if now - file.stat().st_mtime > max_age:
+                    file.unlink()
+            except Exception:
+                logger.exception(f"删除文件失败: {file}")
+
+    # 缓存清理
+    def cleanup_group_cache(self):
+        now = time.time()
+        keys_to_delete = [
+            k for k, v in self.group_name_cache.items()
+            if now - v["ts"] > self.cache_TTL
+        ]
+
+        for k in keys_to_delete:
+            del self.group_name_cache[k]
 
     # 获取当前日期
     def today(self) -> str:
         return datetime.now().strftime("%Y-%m-%d")
 
     # 初始化数据库
-    def init_db(self):
-        conn = sqlite3.connect(self.database_path)
-        # SQL 语句对象
-        cursor = conn.cursor()
-
-        # 创建总表，用于存储群消息数　
-        cursor.execute(
+    async def init_db(self):
+        db = self.db
+        # 异步化数据库初始化逻辑
+        await db.execute(
             """
             CREATE TABLE IF NOT EXISTS group_message_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,8 +103,8 @@ class GroupMessageCounter(Star):
             );
             """
         )
-        # 创建群聊 - 消息数表，用于存储不同群当天的消息总数
-        cursor.execute(
+
+        await db.execute(
             """
             CREATE TABLE IF NOT EXISTS group_message_count (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,24 +115,22 @@ class GroupMessageCounter(Star):
             );
             """
         )
-        # 创建索引，提升查询效率，遵循最左匹配原则
-        cursor.execute(
+
+        await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_group_date_count_count_rank
             ON group_message_stats (group_id, date, message_count DESC, user_id ASC);
             """
         )
-        cursor.execute(
+
+        await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_group_date_count_count
             ON group_message_count (group_id, date)
             """
         )
-        
-        # 提交修改
-        conn.commit()
-        # 关闭连接，防止连接持续存在导致并发问题
-        conn.close()
+
+        await db.commit()
         
     # 更新用户群消息数
     async def update_user_counter(self, group_id: str, user_id: str, user_name: str):
@@ -120,8 +139,7 @@ class GroupMessageCounter(Star):
             return 0
         date = self.today()
         db = self.db
-
-        async with self.db_lock:  # 加锁
+        async with self.db_lock:
             # 更新总表信息
             await db.execute(
                 """
@@ -145,12 +163,11 @@ class GroupMessageCounter(Star):
                 (date, group_id)
             )
             self.commit_count += 1
-            # 延迟提交，每 30 条消息提交一次，提高性能
-            if self.commit_count >= 30:
+            # 延迟提交提高性能
+            if self.commit_count >= 30 or time.time() - self.last_commit_time > 5:
                 await db.commit()
                 self.commit_count = 0
-            elif random.random() < 0.01:
-                await db.commit()
+                self.last_commit_time = time.time()
 
     # 获取指定群消息，并返回对应位置的结果
     async def get_group_message_total_count(self, group_id: str):
@@ -278,6 +295,8 @@ class GroupMessageCounter(Star):
         )
 
         logger.debug(f"图片生成成功！路径是: {image_path}")
+        if random.random() < 0.10:  # 10% 概率触发
+            self.cleanup_old_images()
 
         yield event.image_result(image_path)
 
@@ -294,6 +313,11 @@ class GroupMessageCounter(Star):
         group_id = str(event.get_group_id())
 
         await self.update_user_counter(group_id, user_id, user_name)
+
+        if random.random() < 0.01:
+            self.cleanup_old_images()
+            self.cleanup_group_cache()
+
         logger.debug(f"接收到来自用户 {user_name}（编号：{user_id}）的消息！")
 
     async def get_group_name(self, event: AstrMessageEvent, group_id: str) -> str:
@@ -335,18 +359,23 @@ class GroupMessageCounter(Star):
             check_same_thread = False
         )
         self.db.row_factory = aiosqlite.Row
+
         # 定义写日志策略：预写日志，避免数据库写操作阻塞读操作
         await self.db.execute("PRAGMA journal_mode = WAL;")
         # 定义 fsync 同步策略：减少同步次数以提升性能，但数据稳定性将会降低，在本插件的业务场景下，这点损失倒是无伤大雅
         await self.db.execute("PRAGMA synchronous = NORMAL;")
         # 定义临时表存放策略：放入内存，查询速度更快
         await self.db.execute("PRAGMA temp_store = MEMORY;")
-        self.db_lock = asyncio.Lock()
+
+        await self.init_db()
+        await self.db.commit()
+
         self._initialized = True
     
     async def terminate(self):
         """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
         # 数据库存在时执行
         if self.db:
-            await self.db.commit()
-            await self.db.close()
+            async with self.db_lock:
+                await self.db.commit()
+                await self.db.close()
